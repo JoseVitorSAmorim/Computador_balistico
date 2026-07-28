@@ -6,17 +6,30 @@
 #include <limits>
 #include <array>
 
-// Estrutura leve para munições
-struct Shell {
-    std::string name;
-    double caliber_mm;       // Calibre em mm
-    double mass_kg;          // Massa em kg
-    double muzzleVel_ms;     // Velocidade inicial (m/s)
-    double pen0m_mm;         // Penetração a 0m e 0 graus (mm)
-    double dragCoeff;        // Coeficiente de arrasto aerodinâmico (k)
+// Enum para identificar a física da munição
+enum class ShellType {
+    CONVENTIONAL_DEMARRE, // AP, APCBC, APHE (Fórmula de De Marre)
+    SUB_CALIBER_ODERMATT  // APDS, APFSDS (Fórmula de Lanz-Odermatt)
 };
 
-// Estrutura para os tanques
+// Estrutura unificada de Munição
+struct Shell {
+    std::string name;
+    ShellType type;
+    double caliber_mm;       // Calibre nominal do canhão (mm)
+    double mass_kg;          // Massa total do projétil (kg)
+    double muzzleVel_ms;     // Velocidade inicial (m/s)
+    double dragCoeff;        // Arrasto aerodinâmico (k)
+
+    // Específico para De Marre
+    double pen0m_mm = 0.0;   
+
+    // Específico para Lanz-Odermatt (Subcalibrados)
+    double coreLength_mm = 0.0;    // Comprimento do núcleo penetrador (L)
+    double coreDiameter_mm = 0.0;  // Diâmetro do núcleo penetrador (D)
+    double coreDensity_kgm3 = 0.0; // Densidade do penetrador (ex: 17500 kg/m³)
+};
+
 struct Tank {
     std::string name;
     std::vector<Shell> shells;
@@ -24,25 +37,46 @@ struct Tank {
 
 class BallisticEngine {
 public:
-    // Retorna velocidade estimada sem alocar variáveis adicionais
     static inline double getVelocityAtDistance(double muzzleVel, double distance_m, double dragCoeff) {
         return muzzleVel * std::exp(-dragCoeff * distance_m);
     }
 
-    // Aplica a Fórmula de De Marre com variação de velocidade e ângulo
+    // Calcula penetração selecionando a fórmula física adequada
     static double calculatePenetration(const Shell& shell, double distance_m, double angle_degrees) {
         double currentVel = getVelocityAtDistance(shell.muzzleVel_ms, distance_m, shell.dragCoeff);
-        double velocityRatio = std::pow(currentVel / shell.muzzleVel_ms, 1.43);
-        double flatPenetration = shell.pen0m_mm * velocityRatio;
-
-        // Converte ângulo para radianos (0° = impacto direto/perpendicular)
         double radians = angle_degrees * (M_PI / 180.0);
-        return flatPenetration * std::cos(radians);
+
+        if (shell.type == ShellType::CONVENTIONAL_DEMARRE) {
+            // === FÓRMULA DE DE MARRE ===
+            double velocityRatio = std::pow(currentVel / shell.muzzleVel_ms, 1.43);
+            double flatPenetration = shell.pen0m_mm * velocityRatio;
+            
+            return flatPenetration * std::cos(radians);
+        } 
+        else {
+            // === FÓRMULA DE LANZ-ODERMATT (APDS / APFSDS) ===
+            constexpr double rho_t = 7850.0;   // Densidade do Aço RHA (kg/m³)
+            constexpr double Y_t = 1.8e9;      // Resistência do aço RHA (~1.8 GPa)
+
+            // Pressão dinâmica q = 0.5 * rho_p * v^2
+            double dynamicPressure = 0.5 * shell.coreDensity_kgm3 * std::pow(currentVel, 2);
+            
+            // Fator hidrodinâmico e correção de resistência do material
+            double hydrodynamicFactor = std::sqrt(shell.coreDensity_kgm3 / rho_t);
+            double strengthCorrection = std::exp(-Y_t / dynamicPressure);
+
+            // Penetração plana P = L * sqrt(rho_p / rho_t) * exp(-Y_t / q)
+            double flatPenetration = shell.coreLength_mm * hydrodynamicFactor * strengthCorrection;
+
+            // Penetradores longos perdem eficiência em ângulos (exponencial de inclinação Lanz-Odermatt)
+            return flatPenetration * std::pow(std::cos(radians), 1.15);
+        }
     }
 
-    // Exibe tabela comparativa de distâncias
     static void printDistanceTable(const Shell& shell, double angle_degrees) {
-        std::cout << "\n--- TABELA BALÍSTICA (" << shell.name << " @ " << angle_degrees << " deg) ---\n";
+        std::cout << "\n--- TABELA BALÍSTICA (" << shell.name 
+                  << " | " << (shell.type == ShellType::CONVENTIONAL_DEMARRE ? "De Marre" : "Lanz-Odermatt")
+                  << " @ " << angle_degrees << " deg) ---\n";
         std::cout << std::left << std::setw(12) << "Distancia" 
                   << std::setw(15) << "Velocidade" 
                   << std::setw(18) << "Penetracao" << "\n";
@@ -55,7 +89,7 @@ public:
             double vel = getVelocityAtDistance(shell.muzzleVel_ms, d, shell.dragCoeff);
             double pen = calculatePenetration(shell, d, angle_degrees);
 
-            // Formatação direta no stream sem criar std::string intermediárias
+             // Formatação direta no stream sem criar std::string intermediárias
             std::cout << std::left << std::setw(4) << static_cast<int>(d) << " m       "
                       << std::setw(4) << static_cast<int>(vel) << " m/s        "
                       << std::fixed << std::setprecision(1) << pen << " mm\n";
@@ -65,8 +99,8 @@ public:
 };
 
 // Limpa a tela usando códigos ANSI 
-void clearScreen() {
-    std::cout << "\033[2J\033[1;1H";
+void clearScreen() { 
+    std::cout << "\033[2J\033[1;1H"; 
 }
 
 // Limpa buffer do std::cin
@@ -83,28 +117,20 @@ void pauseAndContinue() {
 }
 
 int main() {
-    // Garagem de tanques armazenada em memória contígua
+    // Garagem cadastrada com munições convencionais e subcalibradas
     std::vector<Tank> garage = {
         {
             "T-34-85 (URSS)", 
             {
-                {"85mm BR-365A (APHEBC)", 85.0, 9.2, 792.0, 135.0, 0.000148},
-                {"85mm BR-365K (APHE)",   85.0, 9.2, 792.0, 142.0, 0.000160},
-                {"85mm BR-365P (APCR)",   85.0, 5.0, 1050.0, 180.0, 0.000320}
-            }
-        },
-        {
-            "Tiger I (Alemanha)", 
-            {
-                {"88mm PzGr 39 (APCBC)", 88.0, 10.2, 773.0, 165.0, 0.000135},
-                {"88mm PzGr 40 (APCR)",  88.0, 7.3,  930.0, 226.0, 0.000300}
+                {"85mm BR-365A (APHEBC)", ShellType::CONVENTIONAL_DEMARRE, 85.0, 9.2, 792.0, 0.000148, 135.0},
+                {"85mm BR-365P (APCR)",   ShellType::SUB_CALIBER_ODERMATT, 85.0, 5.0, 1050.0, 0.000320, 0.0, 110.0, 28.0, 15000.0}
             }
         },
         {
             "Sherman Firefly (Reino Unido)", 
             {
-                {"76.2mm Shot Mk.8 (APCBC)", 76.2, 7.7, 884.0, 171.0, 0.000140},
-                {"76.2mm Shot SV/Mk.1 (APDS)", 76.2, 3.3, 1204.0, 228.0, 0.000280}
+                {"76.2mm Shot Mk.8 (APCBC)",   ShellType::CONVENTIONAL_DEMARRE, 76.2, 7.7, 884.0, 0.000140, 171.0},
+                {"76.2mm Shot SV/Mk.1 (APDS)", ShellType::SUB_CALIBER_ODERMATT, 76.2, 3.3, 1204.0, 0.000280, 0.0, 145.0, 28.0, 17000.0}
             }
         }
     };
@@ -112,14 +138,14 @@ int main() {
     while (true) {
         clearScreen();
         std::cout << "=============================================\n";
-        std::cout << "   CALCULADORA BALÍSTICA DE BLINDAGEM (C++)  \n";
+        std::cout << "   CALCULADORA BALÍSTICA MULTI-FÍSICA (C++)  \n";
         std::cout << "=============================================\n";
         std::cout << "Escolha um tanque:\n";
 
         for (size_t i = 0; i < garage.size(); ++i) {
             std::cout << " [" << (i + 1) << "] " << garage[i].name << "\n";
         }
-        std::cout << " [" << (garage.size() + 1) << "] + Cadastrar Novo Tanque\n";
+        std::cout << " [" << (garage.size() + 1) << "] + Cadastrar Novo Tanque e Municao\n";
         std::cout << " [0] Sair\n";
         std::cout << "Opcao: ";
 
@@ -141,23 +167,41 @@ int main() {
             std::cout << "Nome da Municao: ";
             std::getline(std::cin, customShell.name);
 
-            std::cout << "Calibre (mm): ";
+            std::cout << "Tipo de Municao:\n";
+            std::cout << " [1] Convencional (AP, APCBC, APHE) - Formula De Marre\n";
+            std::cout << " [2] Subcalibrada (APDS, APFSDS)   - Formula Lanz-Odermatt\n";
+            std::cout << "Opcao: ";
+            int typeChoice;
+            std::cin >> typeChoice;
+
+            std::cout << "Calibre Nominal (mm): ";
             std::cin >> customShell.caliber_mm;
 
-            std::cout << "Massa do Projetil (kg): ";
+            std::cout << "Massa Total do Projetil (kg): ";
             std::cin >> customShell.mass_kg;
 
             std::cout << "Velocidade Inicial (m/s): ";
             std::cin >> customShell.muzzleVel_ms;
 
-            std::cout << "Penetracao a 0m / 0 deg (mm): ";
-            std::cin >> customShell.pen0m_mm;
-
             std::cout << "Coeficiente de Arrasto (~0.00015): ";
             std::cin >> customShell.dragCoeff;
 
+            if (typeChoice == 2) {
+                customShell.type = ShellType::SUB_CALIBER_ODERMATT;
+                std::cout << "Comprimento do Núcleo Penetrador L (mm): ";
+                std::cin >> customShell.coreLength_mm;
+                std::cout << "Diametro do Núcleo D (mm): ";
+                std::cin >> customShell.coreDiameter_mm;
+                std::cout << "Densidade do Penetrador (ex: 17500 para Tungstênio): ";
+                std::cin >> customShell.coreDensity_kgm3;
+            } else {
+                customShell.type = ShellType::CONVENTIONAL_DEMARRE;
+                std::cout << "Penetracao Base a 0m / 0 deg (mm): ";
+                std::cin >> customShell.pen0m_mm;
+            }
+
             newTank.shells.push_back(customShell);
-            
+
             // Movemos a memória diretamente para a garagem (zero cópia de strings)
             garage.push_back(std::move(newTank));
             selectedTank = &garage.back();
@@ -170,12 +214,13 @@ int main() {
             continue;
         }
 
-        // Seleção de munição com ponteiro/referência
+        // Seleção de munição
         clearScreen();
         std::cout << "Tanque: " << selectedTank->name << "\n";
         std::cout << "Escolha a municao:\n";
         for (size_t i = 0; i < selectedTank->shells.size(); ++i) {
-            std::cout << " [" << (i + 1) << "] " << selectedTank->shells[i].name << "\n";
+            std::cout << " [" << (i + 1) << "] " << selectedTank->shells[i].name 
+                      << (selectedTank->shells[i].type == ShellType::SUB_CALIBER_ODERMATT ? " [Subcalibrada]" : " [Convencional]") << "\n";
         }
         std::cout << "Opcao: ";
 
@@ -188,7 +233,7 @@ int main() {
         // Aponta direto para a munição escolhida
         const Shell& selectedShell = selectedTank->shells[shellChoice - 1];
 
-        // Leitura dos parâmetros
+        // Parâmetros de disparo
         double distance, angle;
         std::cout << "\nDistancia do alvo (m): ";
         std::cin >> distance;
@@ -200,7 +245,7 @@ int main() {
         double currentVel = BallisticEngine::getVelocityAtDistance(selectedShell.muzzleVel_ms, distance, selectedShell.dragCoeff);
         double penResult = BallisticEngine::calculatePenetration(selectedShell, distance, angle);
 
-        // Apresentação dos resultados
+        // Exibição
         clearScreen();
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "=============================================\n";
@@ -208,14 +253,15 @@ int main() {
         std::cout << "=============================================\n";
         std::cout << "Tanque:               " << selectedTank->name << "\n";
         std::cout << "Municao:              " << selectedShell.name << "\n";
+        std::cout << "Algoritmo Aplicado:   " << (selectedShell.type == ShellType::CONVENTIONAL_DEMARRE ? "De Marre (Full-Caliber)" : "Lanz-Odermatt (Sub-Caliber)") << "\n";
         std::cout << "Distancia do Alvo:    " << distance << " m\n";
         std::cout << "Angulo de Impacto:    " << angle << " deg\n";
-        std::cout << "Velocidade no Alvo:   " << currentVel << " m/s (Perda: " << (selectedShell.muzzleVel_ms - currentVel) << " m/s)\n";
+        std::cout << "Velocidade no Alvo:   " << currentVel << " m/s\n";
         std::cout << "PENETRACAO ESTIMADA:  " << penResult << " mm\n";
         std::cout << "=============================================\n";
 
         BallisticEngine::printDistanceTable(selectedShell, angle);
-
+        
         // Pausa para leitura do jogador antes de limpar o terminal
         pauseAndContinue();
     }
