@@ -4,8 +4,9 @@
 #include <cmath>
 #include <iomanip>
 #include <limits>
+#include <array>
 
-// Estrutura para representar a munição
+// Estrutura leve para munições
 struct Shell {
     std::string name;
     double caliber_mm;       // Calibre em mm
@@ -15,7 +16,7 @@ struct Shell {
     double dragCoeff;        // Coeficiente de arrasto aerodinâmico (k)
 };
 
-// Estrutura para representar o tanque e seu arsenal
+// Estrutura para os tanques
 struct Tank {
     std::string name;
     std::vector<Shell> shells;
@@ -23,8 +24,8 @@ struct Tank {
 
 class BallisticEngine {
 public:
-    // Calcula velocidade remanescente a uma certa distância
-    static double getVelocityAtDistance(double muzzleVel, double distance_m, double dragCoeff) {
+    // Retorna velocidade estimada sem alocar variáveis adicionais
+    static inline double getVelocityAtDistance(double muzzleVel, double distance_m, double dragCoeff) {
         return muzzleVel * std::exp(-dragCoeff * distance_m);
     }
 
@@ -41,33 +42,48 @@ public:
 
     // Exibe tabela comparativa de distâncias
     static void printDistanceTable(const Shell& shell, double angle_degrees) {
-        std::cout << "\n--- TABELA BALÍSTICA DE PENETRAÇÃO (" << shell.name << " @ " << angle_degrees << " deg) ---\n";
-        std::cout << std::left << std::setw(12) << "Distância" 
+        std::cout << "\n--- TABELA BALÍSTICA (" << shell.name << " @ " << angle_degrees << " deg) ---\n";
+        std::cout << std::left << std::setw(12) << "Distancia" 
                   << std::setw(15) << "Velocidade" 
-                  << std::setw(18) << "Penetração" << "\n";
+                  << std::setw(18) << "Penetracao" << "\n";
         std::cout << "---------------------------------------------\n";
 
-        std::vector<double> distances = {0, 100, 300, 500, 800, 1000, 1500, 2000};
+        // Array estático na memória de código
+        static constexpr std::array<double, 8> distances = {0, 100, 300, 500, 800, 1000, 1500, 2000};
+
         for (double d : distances) {
             double vel = getVelocityAtDistance(shell.muzzleVel_ms, d, shell.dragCoeff);
             double pen = calculatePenetration(shell, d, angle_degrees);
 
-            std::cout << std::left << std::setw(12) << (std::to_string((int)d) + " m")
-                      << std::setw(15) << (std::to_string((int)vel) + " m/s")
-                      << std::setw(18) << (std::to_string(pen).substr(0, 5) + " mm") << "\n";
+            // Formatação direta no stream sem criar std::string intermediárias
+            std::cout << std::left << std::setw(4) << static_cast<int>(d) << " m       "
+                      << std::setw(4) << static_cast<int>(vel) << " m/s        "
+                      << std::fixed << std::setprecision(1) << pen << " mm\n";
         }
         std::cout << "---------------------------------------------\n";
     }
 };
 
-// Limpa buffer de entrada
+// Limpa a tela usando códigos ANSI 
+void clearScreen() {
+    std::cout << "\033[2J\033[1;1H";
+}
+
+// Limpa buffer do std::cin
 void clearInput() {
     std::cin.clear();
     std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
 }
 
+// Aguarda o usuário antes de limpar a tela
+void pauseAndContinue() {
+    std::cout << "\nPressione ENTER para continuar...";
+    clearInput();
+    std::cin.get();
+}
+
 int main() {
-    // Banco de dados inicial de tanques e munições
+    // Garagem de tanques armazenada em memória contígua
     std::vector<Tank> garage = {
         {
             "T-34-85 (URSS)", 
@@ -94,7 +110,8 @@ int main() {
     };
 
     while (true) {
-        std::cout << "\n=============================================\n";
+        clearScreen();
+        std::cout << "=============================================\n";
         std::cout << "   CALCULADORA BALÍSTICA DE BLINDAGEM (C++)  \n";
         std::cout << "=============================================\n";
         std::cout << "Escolha um tanque:\n";
@@ -102,98 +119,108 @@ int main() {
         for (size_t i = 0; i < garage.size(); ++i) {
             std::cout << " [" << (i + 1) << "] " << garage[i].name << "\n";
         }
-        std::cout << " [" << (garage.size() + 1) << "] + Cadastrar Novo Tanque / Munição Customizada\n";
+        std::cout << " [" << (garage.size() + 1) << "] + Cadastrar Novo Tanque\n";
         std::cout << " [0] Sair\n";
-        std::cout << "Opção: ";
+        std::cout << "Opcao: ";
 
         int tankChoice;
         if (!(std::cin >> tankChoice) || tankChoice == 0) break;
 
-        Tank selectedTank;
+        // PONTEIRO: Evita copiar a estrutura 'Tank' inteira
+        const Tank* selectedTank = nullptr;
 
-        // Opção de criar novo tanque/munição
         if (tankChoice == static_cast<int>(garage.size() + 1)) {
             clearInput();
+            Tank newTank;
+            Shell customShell;
+
             std::cout << "\n--- CADASTRAR NOVO TANQUE ---\n";
             std::cout << "Nome do Tanque: ";
-            std::getline(std::cin, selectedTank.name);
+            std::getline(std::cin, newTank.name);
 
-            Shell customShell;
-            std::cout << "Nome da Munição: ";
+            std::cout << "Nome da Municao: ";
             std::getline(std::cin, customShell.name);
 
             std::cout << "Calibre (mm): ";
             std::cin >> customShell.caliber_mm;
 
-            std::cout << "Massa do Projétil (kg): ";
+            std::cout << "Massa do Projetil (kg): ";
             std::cin >> customShell.mass_kg;
 
-            std::cout << "Velocidade Inicial na Boca (m/s): ";
+            std::cout << "Velocidade Inicial (m/s): ";
             std::cin >> customShell.muzzleVel_ms;
 
-            std::cout << "Penetração a 0m / 0 deg (mm): ";
+            std::cout << "Penetracao a 0m / 0 deg (mm): ";
             std::cin >> customShell.pen0m_mm;
 
-            std::cout << "Coeficiente de Arrasto (padrão ~0.00015): ";
+            std::cout << "Coeficiente de Arrasto (~0.00015): ";
             std::cin >> customShell.dragCoeff;
 
-            selectedTank.shells.push_back(customShell);
-            garage.push_back(selectedTank); // Salva na garagem durante a execução
+            newTank.shells.push_back(customShell);
+            
+            // Movemos a memória diretamente para a garagem (zero cópia de strings)
+            garage.push_back(std::move(newTank));
+            selectedTank = &garage.back();
         } 
         else if (tankChoice > 0 && tankChoice <= static_cast<int>(garage.size())) {
-            selectedTank = garage[tankChoice - 1];
+            // Aponta diretamente para o tanque existente na garagem
+            selectedTank = &garage[tankChoice - 1];
         } 
         else {
-            std::cout << "\nOpção inválida!\n";
             continue;
         }
 
-        // Seleção de munição
-        std::cout << "\nTanque selecionado: " << selectedTank.name << "\n";
-        std::cout << "Escolha a munição:\n";
-        for (size_t i = 0; i < selectedTank.shells.size(); ++i) {
-            std::cout << " [" << (i + 1) << "] " << selectedTank.shells[i].name << "\n";
+        // Seleção de munição com ponteiro/referência
+        clearScreen();
+        std::cout << "Tanque: " << selectedTank->name << "\n";
+        std::cout << "Escolha a municao:\n";
+        for (size_t i = 0; i < selectedTank->shells.size(); ++i) {
+            std::cout << " [" << (i + 1) << "] " << selectedTank->shells[i].name << "\n";
         }
-        std::cout << "Opção: ";
+        std::cout << "Opcao: ";
 
         int shellChoice;
         std::cin >> shellChoice;
-        if (shellChoice < 1 || shellChoice > static_cast<int>(selectedTank.shells.size())) {
-            std::cout << "Munição inválida!\n";
+        if (shellChoice < 1 || shellChoice > static_cast<int>(selectedTank->shells.size())) {
             continue;
         }
 
-        Shell selectedShell = selectedTank.shells[shellChoice - 1];
+        // Aponta direto para a munição escolhida
+        const Shell& selectedShell = selectedTank->shells[shellChoice - 1];
 
-        // Leitura de parâmetros de combate
+        // Leitura dos parâmetros
         double distance, angle;
-        std::cout << "\nDigite a distância do alvo em metros (ex: 500): ";
+        std::cout << "\nDistancia do alvo (m): ";
         std::cin >> distance;
 
-        std::cout << "Digite o ângulo de impacto da blindagem em graus (0 = reto/perpendicular): ";
+        std::cout << "Angulo de impacto (graus, 0 = perpendicular): ";
         std::cin >> angle;
 
-        // Cálculos
+        // Processamento
         double currentVel = BallisticEngine::getVelocityAtDistance(selectedShell.muzzleVel_ms, distance, selectedShell.dragCoeff);
         double penResult = BallisticEngine::calculatePenetration(selectedShell, distance, angle);
 
-        // Exibição dos resultados
+        // Apresentação dos resultados
+        clearScreen();
         std::cout << std::fixed << std::setprecision(2);
-        std::cout << "\n=============================================\n";
+        std::cout << "=============================================\n";
         std::cout << "            RESULTADO DO CÁLCULO             \n";
         std::cout << "=============================================\n";
-        std::cout << "Tanque:               " << selectedTank.name << "\n";
-        std::cout << "Munição:              " << selectedShell.name << "\n";
-        std::cout << "Distância do Alvo:    " << distance << " m\n";
-        std::cout << "Ângulo de Impacto:    " << angle << "°\n";
+        std::cout << "Tanque:               " << selectedTank->name << "\n";
+        std::cout << "Municao:              " << selectedShell.name << "\n";
+        std::cout << "Distancia do Alvo:    " << distance << " m\n";
+        std::cout << "Angulo de Impacto:    " << angle << " deg\n";
         std::cout << "Velocidade no Alvo:   " << currentVel << " m/s (Perda: " << (selectedShell.muzzleVel_ms - currentVel) << " m/s)\n";
-        std::cout << "PENETRAÇÃO ESTIMADA:  " << penResult << " mm\n";
+        std::cout << "PENETRACAO ESTIMADA:  " << penResult << " mm\n";
         std::cout << "=============================================\n";
 
-        // Tabela de apoio
         BallisticEngine::printDistanceTable(selectedShell, angle);
+
+        // Pausa para leitura do jogador antes de limpar o terminal
+        pauseAndContinue();
     }
 
-    std::cout << "\nCalculadora encerrada.\n";
+    clearScreen();
+    std::cout << "Calculadora encerrada.\n";
     return 0;
 }
