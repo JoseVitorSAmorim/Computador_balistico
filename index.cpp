@@ -5,14 +5,15 @@
 #include <iomanip>
 #include <limits>
 #include <array>
+#include <cstdint>
 
 // Enum para identificar a física da munição
-enum class ShellType {
+enum class ShellType : uint8_t {
     CONVENTIONAL_DEMARRE, // AP, APCBC, APHE (Fórmula de De Marre)
     SUB_CALIBER_ODERMATT  // APDS, APFSDS (Fórmula de Lanz-Odermatt)
 };
 
-// Estrutura unificada de Munição
+// Estrutura de Munição
 struct Shell {
     std::string name;
     ShellType type;
@@ -27,7 +28,7 @@ struct Shell {
     // Específico para Lanz-Odermatt (Subcalibrados)
     double coreLength_mm = 0.0;    // Comprimento do núcleo penetrador (L)
     double coreDiameter_mm = 0.0;  // Diâmetro do núcleo penetrador (D)
-    double coreDensity_kgm3 = 0.0; // Densidade do penetrador (ex: 17500 kg/m³)
+    double coreDensity_kgm3 = 0.0; // Densidade do material do núcleo (kg/m³)
 };
 
 struct Tank {
@@ -37,19 +38,19 @@ struct Tank {
 
 class BallisticEngine {
 public:
+    // Retorna velocidade remanescente sem alocações
     static inline double getVelocityAtDistance(double muzzleVel, double distance_m, double dragCoeff) {
         return muzzleVel * std::exp(-dragCoeff * distance_m);
     }
 
-    // Calcula penetração selecionando a fórmula física adequada
-    static double calculatePenetration(const Shell& shell, double distance_m, double angle_degrees) {
-        double currentVel = getVelocityAtDistance(shell.muzzleVel_ms, distance_m, shell.dragCoeff);
-        double radians = angle_degrees * (M_PI / 180.0);
+    // Otimização: Recebe a velocidade JÁ CALCULADA para evitar re-computar std::exp()
+    static double calculatePenetrationFromVelocity(const Shell& shell, double currentVel, double angle_degrees) {
+        const double radians = angle_degrees * (M_PI / 180.0);
 
         if (shell.type == ShellType::CONVENTIONAL_DEMARRE) {
             // === FÓRMULA DE DE MARRE ===
-            double velocityRatio = std::pow(currentVel / shell.muzzleVel_ms, 1.43);
-            double flatPenetration = shell.pen0m_mm * velocityRatio;
+            const double velocityRatio = std::pow(currentVel / shell.muzzleVel_ms, 1.43);
+            const double flatPenetration = shell.pen0m_mm * velocityRatio;
             
             return flatPenetration * std::cos(radians);
         } 
@@ -58,21 +59,23 @@ public:
             constexpr double rho_t = 7850.0;   // Densidade do Aço RHA (kg/m³)
             constexpr double Y_t = 1.8e9;      // Resistência do aço RHA (~1.8 GPa)
 
-            // Pressão dinâmica q = 0.5 * rho_p * v^2
-            double dynamicPressure = 0.5 * shell.coreDensity_kgm3 * std::pow(currentVel, 2);
-            
-            // Fator hidrodinâmico e correção de resistência do material
-            double hydrodynamicFactor = std::sqrt(shell.coreDensity_kgm3 / rho_t);
-            double strengthCorrection = std::exp(-Y_t / dynamicPressure);
+            const double dynamicPressure = 0.5 * shell.coreDensity_kgm3 * (currentVel * currentVel);
+            const double hydrodynamicFactor = std::sqrt(shell.coreDensity_kgm3 / rho_t);
+            const double strengthCorrection = std::exp(-Y_t / dynamicPressure);
 
-            // Penetração plana P = L * sqrt(rho_p / rho_t) * exp(-Y_t / q)
-            double flatPenetration = shell.coreLength_mm * hydrodynamicFactor * strengthCorrection;
+            const double flatPenetration = shell.coreLength_mm * hydrodynamicFactor * strengthCorrection;
 
-            // Penetradores longos perdem eficiência em ângulos (exponencial de inclinação Lanz-Odermatt)
             return flatPenetration * std::pow(std::cos(radians), 1.15);
         }
     }
 
+    // Sobrecarga para conveniência caso a velocidade ainda não tenha sido calculada
+    static inline double calculatePenetration(const Shell& shell, double distance_m, double angle_degrees) {
+        const double currentVel = getVelocityAtDistance(shell.muzzleVel_ms, distance_m, shell.dragCoeff);
+        return calculatePenetrationFromVelocity(shell, currentVel, angle_degrees);
+    }
+
+    // Tabela balística com zero alocação e sem re-cálculos de velocidade
     static void printDistanceTable(const Shell& shell, double angle_degrees) {
         std::cout << "\n--- TABELA BALÍSTICA (" << shell.name 
                   << " | " << (shell.type == ShellType::CONVENTIONAL_DEMARRE ? "De Marre" : "Lanz-Odermatt")
@@ -85,11 +88,11 @@ public:
         // Array estático na memória de código
         static constexpr std::array<double, 8> distances = {0, 100, 300, 500, 800, 1000, 1500, 2000};
 
-        for (double d : distances) {
-            double vel = getVelocityAtDistance(shell.muzzleVel_ms, d, shell.dragCoeff);
-            double pen = calculatePenetration(shell, d, angle_degrees);
+        for (const double d : distances) {
+            // Calcula velocidade apenas 1 vez por iteração
+            const double vel = getVelocityAtDistance(shell.muzzleVel_ms, d, shell.dragCoeff);
+            const double pen = calculatePenetrationFromVelocity(shell, vel, angle_degrees);
 
-             // Formatação direta no stream sem criar std::string intermediárias
             std::cout << std::left << std::setw(4) << static_cast<int>(d) << " m       "
                       << std::setw(4) << static_cast<int>(vel) << " m/s        "
                       << std::fixed << std::setprecision(1) << pen << " mm\n";
@@ -117,8 +120,11 @@ void pauseAndContinue() {
 }
 
 int main() {
-    // Garagem cadastrada com munições convencionais e subcalibradas
-    std::vector<Tank> garage = {
+    // Pré-alocação de capacidade para evitar realocações no Heap ao adicionar tanques
+    std::vector<Tank> garage;
+    garage.reserve(10);
+
+    garage = {
         {
             "T-34-85 (URSS)", 
             {
@@ -152,7 +158,7 @@ int main() {
         int tankChoice;
         if (!(std::cin >> tankChoice) || tankChoice == 0) break;
 
-        // PONTEIRO: Evita copiar a estrutura 'Tank' inteira
+        // PONTEIRO: Zero cópias de objetos na memória
         const Tank* selectedTank = nullptr;
 
         if (tankChoice == static_cast<int>(garage.size() + 1)) {
@@ -200,21 +206,21 @@ int main() {
                 std::cin >> customShell.pen0m_mm;
             }
 
-            newTank.shells.push_back(customShell);
+            // Movemos a munição diretamente sem criar cópias temporárias
+            newTank.shells.emplace_back(std::move(customShell));
 
-            // Movemos a memória diretamente para a garagem (zero cópia de strings)
-            garage.push_back(std::move(newTank));
+            // Transferência direta de propriedade para a garagem
+            garage.emplace_back(std::move(newTank));
             selectedTank = &garage.back();
         } 
         else if (tankChoice > 0 && tankChoice <= static_cast<int>(garage.size())) {
-            // Aponta diretamente para o tanque existente na garagem
             selectedTank = &garage[tankChoice - 1];
         } 
         else {
             continue;
         }
 
-        // Seleção de munição
+        // Seleção de munição via ponteiro/referência
         clearScreen();
         std::cout << "Tanque: " << selectedTank->name << "\n";
         std::cout << "Escolha a municao:\n";
@@ -230,7 +236,7 @@ int main() {
             continue;
         }
 
-        // Aponta direto para a munição escolhida
+        // Referência constante apontando diretamente para o objeto existente
         const Shell& selectedShell = selectedTank->shells[shellChoice - 1];
 
         // Parâmetros de disparo
@@ -241,11 +247,11 @@ int main() {
         std::cout << "Angulo de impacto (graus, 0 = perpendicular): ";
         std::cin >> angle;
 
-        // Processamento
-        double currentVel = BallisticEngine::getVelocityAtDistance(selectedShell.muzzleVel_ms, distance, selectedShell.dragCoeff);
-        double penResult = BallisticEngine::calculatePenetration(selectedShell, distance, angle);
+        // Processamento com reaproveitamento de cálculo de velocidade
+        const double currentVel = BallisticEngine::getVelocityAtDistance(selectedShell.muzzleVel_ms, distance, selectedShell.dragCoeff);
+        const double penResult = BallisticEngine::calculatePenetrationFromVelocity(selectedShell, currentVel, angle);
 
-        // Exibição
+        // Exibição dos resultados
         clearScreen();
         std::cout << std::fixed << std::setprecision(2);
         std::cout << "=============================================\n";
