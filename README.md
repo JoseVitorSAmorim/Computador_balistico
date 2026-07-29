@@ -16,8 +16,6 @@ O sistema suporta dois modelos físicos distintos dependendo do tipo de projéti
 
 * Sem Cópias Temporárias: Passagem de parâmetros por referência constante (const Shell&) e uso de Move Semantics (std::move / emplace_back) na inserção de novos tanques.
 
-  
-
 # 📐 Fórmulas Físicas e Algoritmos
 ## 1. Desaceleração Aerodinâmica (Perda de Velocidade)
 A velocidade em função da distância é modelada pela decadência exponencial de arrasto:
@@ -155,5 +153,93 @@ struct Tank {
 | --- | --- | --- |
 | Aplicações |AP, APCBC, APHE, HE | APDS, APFSDS, APCR|
 | Mecânica Principal | Transferência de energia cinética global | Deformação e penetração hidrodinâmica |
+| Variáveis Chave | Penetração base ($P_0$), velocidade inicial ($v_0$) | Comprimento do penetrador ($L$), densidade ($\rho_p$) |
+| Comportamento Angular| Perda linear ($\cos \theta$) | Perda não-linear ($\cos^{1.15} \theta$) |
 | Custo Computacional | 1 chamada std::pow, 1 std::cos | 1 std::sqrt, 1 std::exp, 1 std::pow |
 
+---
+
+# 🧠 Custo de Memória (Memory Footprint)
+
+O consumo de memória é dividido entre a **Stack** (pilha de execução), a **Heap** (memória dinâmica) e a área de dados estáticos (`.rodata`).
+
+## A. Análise do Tamanho das Estruturas (`sizeof`)
+
+Em arquiteturas de **64 bits** (utilizando compiladores padrão como GCC ou Clang):
+
+| Estrutura / Tipo | Componentes Internos | Tamanho individual | Total da Estrutura |
+| --- | --- | --- | --- |
+| `ShellType` | `uint8_t` | 1 byte | **1 byte** |
+| `Shell` | `std::string name`<br>
+
+<br>`ShellType type` (+ 7 bytes padding de alinhamento)<br>
+
+<br>8 variáveis do tipo `double` | 32 bytes<br>
+
+<br>8 bytes<br>
+
+<br>64 bytes | **104 bytes** por munição |
+| `Tank` | `std::string name`<br>
+
+<br>`std::vector<Shell> shells` | 32 bytes<br>
+
+<br>24 bytes | **56 bytes** por tanque na Stack |
+
+> **Nota de alinhamento:** O atributo `ShellType` foi reduzido para `uint8_t` (1 byte). O compilador insere 7 bytes de *padding* para garantir que os campos `double` subsequentes fiquem alinhados em endereços múltiplos de 8 bytes na memória.
+
+---
+
+## B. Consumo no Heap e Stack em Tempo de Execução
+
+1. **Vetor Principal (`garage`):**
+* Ao chamar `garage.reserve(10)`, o vetor reserva espaço no Heap para 10 elementos do tipo `Tank`:
+$$10 \times 56\text{ bytes} = 560\text{ bytes}$$
+
+
+
+
+2. **Vetores Internos de Munições (`shells`):**
+* Com os 2 tanques iniciais (2 munições cada):
+$$2 \text{ tanques} \times 2 \text{ munições} \times 104\text{ bytes} = 416\text{ bytes}$$
+
+
+
+
+3. **Strings (`std::string`):**
+* Devido à otimização **SSO** (*Small String Optimization*), strings curtas com até 15 caracteres não alocam no Heap; ficam guardadas na própria estrutura de 32 bytes.
+
+
+4. **Constantes Estáticas (`.rodata`):**
+* O vetor `static constexpr std::array<double, 8> distances` ocupa $8 \times 8 = 64\text{ bytes}$ no segmento de código de leitura.
+
+
+
+**Consumo Total estimado da aplicação:** **< 2 KB de RAM**.
+
+---
+
+# ⚡ Custo de Processamento (Complexidade & CPU)
+
+## A. Complexidade Algorítmica (Big-O)
+
+* **Cálculo da Velocidade (`getVelocityAtDistance`):** $\mathcal{O}(1)$ — Executa 1 multiplicação e 1 exponencial.
+* **Cálculo de Penetração (`calculatePenetrationFromVelocity`):** $\mathcal{O}(1)$ — Realiza cálculos aritméticos diretos e funções transcendentais.
+* **Geração da Tabela (`printDistanceTable`):** $\mathcal{O}(1)$ contínuo (ou $\mathcal{O}(N)$ onde $N = 8$, tamanho fixo do array de distâncias).
+
+---
+
+## B. Otimizações de CPU Implementadas
+
+1. **Reaproveitamento de Cálculo da Exponencial ($e^{-k \cdot d}$):**
+* A função `std::exp()` exige entre **30 e 80 ciclos de clock** do processador.
+* Ao passar a velocidade já calculada para `calculatePenetrationFromVelocity`, o código reduz pela metade a quantidade de chamadas a `std::exp()`, economizando cerca de **300 a 500 ciclos de CPU** na renderização de cada tabela balística.
+
+
+2. **Custo Matemático por Algoritmo:**
+* **De Marre:** Executa 1 `std::pow` ($v^{1.43}$) e 1 `std::cos`.
+* **Lanz-Odermatt:** Executa 1 `std::sqrt`, 1 `std::exp` (correção de resistência do material) e 1 `std::pow` ($\cos^{1.15}$).
+
+
+3. **Gargalo Real do Programa (I/O):**
+* O custo computacional da matemática balística é insignificante (medido em nanosegundos).
+* O maior gargalo de tempo durante a execução é a **E/S do terminal** (`std::cout`), que leva milissegundos para formatar e renderizar o texto no console.
